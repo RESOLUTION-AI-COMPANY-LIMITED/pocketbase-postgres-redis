@@ -1,89 +1,128 @@
-# PocketBase for PostgreSQL & MySQL (Enterprise Ready)
+# 🚀 PocketBase PostgreSQL & Redis
 
-This is a heavily customized fork of [PocketBase](https://pocketbase.io), re-engineered for enterprise-grade production environments. The core storage engine has been replaced with **PostgreSQL** and **MySQL** to provide higher performance, scalability, and clustering capabilities.
+**PocketBase fork with PostgreSQL, MySQL & Redis clustering support**
 
-By moving away from SQLite's write-locking limitations, this project is designed for high-concurrency, multi-node clusters, and complex data environments.
+Based on [postgrebase](https://github.com/zhenruyan/postgrebase) · Research docs: [postgres-migration-research](https://github.com/RESOLUTION-AI-COMPANY-LIMITED/postgres-migration-research)
 
-## Core Features
+---
 
-- **Enterprise Performance:** Overcomes SQLite write-locks by leveraging PostgreSQL/MySQL's robust concurrency models.
-- **Cluster-Ready Architecture:** Native support for multi-instance deployments. Since it doesn't rely on local database files, you can easily run multiple instances behind a load balancer.
-- **Dual Database Engines:**
-    - **PostgreSQL:** Default engine with standard DSN support.
-    - **MySQL:** Fully compatible via the `mysql://` DSN prefix.
-- **Flexible Caching:**
-    - **Redis Cache:** Enables distributed caching for cluster environments via `--redisDsn`. When enabled, **SSE Realtime subscriptions also use Redis Pub/Sub**, ensuring message synchronization across all nodes.
-    - **In-Memory Cache:** Automatically falls back to high-performance local memory caching if Redis is not configured, ensuring lightning-fast responses for standalone setups.
-- **Maintain PocketBase Experience:** 100% compatible with existing PocketBase APIs, Admin UI, and business logic.
+## ✨ Features
 
-## Quick Start
+- ✅ **PostgreSQL** support (lib/pq)
+- ✅ **MySQL** support (go-sql-driver/mysql)  
+- ✅ **Redis Pub/Sub** for multi-node clustering
+- ✅ **Graceful degradation** (Redis optional)
+- ✅ **Backward compatible** with SQLite
 
-### 1. Prerequisites
+---
 
-- Go 1.18+
-- PostgreSQL or MySQL instance
+## 🚀 Quick Start
 
-### 2. Build
+### Install
 
 ```bash
-git clone https://github.com/free/postgresqlbaseapi.git
-cd postgresqlbaseapi
-# Build binary
-go build -o pb ./build/
+go install github.com/RESOLUTION-AI-COMPANY-LIMITED/pocketbase-postgres-redis/build@latest
 ```
 
-### 3. Run
-
-By default, the application tries to connect to PostgreSQL at `127.0.0.1:5432`.
-
-#### Using PostgreSQL (Recommended for Production)
+Or build from source:
 ```bash
-./pb serve --dataDsn "postgresql://user:password@127.0.0.1:5432/dbname?sslmode=disable"
+git clone https://github.com/RESOLUTION-AI-COMPANY-LIMITED/pocketbase-postgres-redis.git
+cd pocketbase-postgres-redis
+go build -o pocketbase ./build
 ```
 
-#### Using MySQL
-```bash
-./pb serve --dataDsn "mysql://user:password@tcp(127.0.0.1:3306)/dbname"
-```
-
-#### Enable Redis Cache (Enhanced Cluster Performance)
-```bash
-./pb serve --redisDsn "redis://127.0.0.1:6379/0"
-```
-
-## Configuration Flags
-
-- `--dataDsn`: Database connection string.
-    - PostgreSQL: `postgres://user:pass@host:port/db?sslmode=disable`
-    - MySQL: `mysql://user:pass@tcp(host:port)/db`
-- `--redisDsn`: (Optional) Redis connection string. **Defaults to high-performance local memory cache if not provided.**
-- `--dir`: Data directory (used for file uploads, backups, etc., but not for the main database).
-- `--encryptionEnv`: Name of the environment variable for settings encryption.
-
-## Development
-
-### Building Admin UI
-
-If you modify the Admin UI, rebuild the embedded assets:
+### Run with PostgreSQL
 
 ```bash
-cd ui
-npm install
-npm run build
+./pocketbase serve --dataDsn="postgres://user:pass@localhost:5432/db?sslmode=disable"
 ```
 
-### Contributing
+### Run with MySQL
 
-1. Fork the repository.
-2. Create your feature branch (`git checkout -b feature/amazing-feature`).
-3. Commit your changes (`git commit -m 'Add some amazing feature'`).
-4. Push to the branch (`git push origin feature/amazing-feature`).
-5. Open a Pull Request.
+```bash
+./pocketbase serve --dataDsn="mysql://user:pass@tcp(localhost:3306)/db"
+```
 
-## Credits
+### Multi-node with Redis
 
-This project is a fork of [PocketBase](https://pocketbase.io). Special thanks to [Gani Georgiev](https://github.com/ganigeorgiev) for the original amazing work.
+```bash
+# Node 1
+./pocketbase serve \
+  --dataDsn="postgres://user:pass@shared-db:5432/db" \
+  --redisDsn="redis://shared-redis:6379/0" \
+  --http="0.0.0.0:8091"
 
-## License
+# Node 2
+./pocketbase serve \
+  --dataDsn="postgres://user:pass@shared-db:5432/db" \
+  --redisDsn="redis://shared-redis:6379/0" \
+  --http="0.0.0.0:8092"
+```
 
-Licensed under the [MIT license](https://opensource.org/licenses/MIT).
+---
+
+## 📖 CLI Flags
+
+```bash
+--dataDsn string         PostgreSQL/MySQL DSN
+--redisDsn string        Redis DSN (optional)
+--dir string             Data directory (default "pb_data")
+--debug                  Enable debug mode
+```
+
+---
+
+## 🏗️ Architecture
+
+### Minimal Changes (~200 lines)
+
+| Component | Lines | File |
+|-----------|-------|------|
+| DB connection | 29 | `core/db_postgresql.go` |
+| Redis integration | ~100 | `core/base.go` |
+| CLI flags | ~30 | `pocketbase.go` |
+
+### Design Patterns
+
+- **Factory Pattern**: Auto-detect driver from DSN
+- **Graceful Degradation**: Redis optional
+- **Pub/Sub**: Cross-node realtime sync
+
+---
+
+## 🧪 Test with Docker
+
+```bash
+# PostgreSQL
+docker run -d -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:15
+
+./pocketbase serve --dataDsn="postgres://postgres:postgres@localhost:5432/postgres"
+
+# Visit: http://localhost:8090/_/
+```
+
+---
+
+## 📚 Documentation
+
+- **Research**: https://github.com/RESOLUTION-AI-COMPANY-LIMITED/postgres-migration-research
+- **PocketBase Docs**: https://pocketbase.io/docs
+- **Postgrebase**: https://github.com/zhenruyan/postgrebase
+
+---
+
+## 🙏 Credits
+
+- [PocketBase](https://github.com/pocketbase/pocketbase) - Original project
+- [Postgrebase](https://github.com/zhenruyan/postgrebase) - PostgreSQL implementation
+- [RESOLUTION AI](https://github.com/RESOLUTION-AI-COMPANY-LIMITED) - Research & enhancements
+
+---
+
+## 📝 License
+
+MIT (same as PocketBase)
+
+---
+
+**Status**: ✅ Working · ⏳ Testing in progress
