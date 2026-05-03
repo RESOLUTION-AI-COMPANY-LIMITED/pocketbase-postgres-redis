@@ -1,0 +1,328 @@
+<script>
+    import tooltip from "@/actions/tooltip";
+    import Field from "@/components/base/Field.svelte";
+    import PageWrapper from "@/components/base/PageWrapper.svelte";
+    import RefreshButton from "@/components/base/RefreshButton.svelte";
+    import Toggler from "@/components/base/Toggler.svelte";
+    import BackupsList from "@/components/settings/BackupsList.svelte";
+    import S3Fields from "@/components/settings/S3Fields.svelte";
+    import WebDAVFields from "@/components/settings/WebDAVFields.svelte";
+    import SettingsSidebar from "@/components/settings/SettingsSidebar.svelte";
+    import { pageTitle } from "@/stores/app";
+    import { removeError } from "@/stores/errors";
+    import { addSuccessToast } from "@/stores/toasts";
+    import ApiClient from "@/utils/ApiClient";
+    import CommonHelper from "@/utils/CommonHelper";
+    import { slide } from "svelte/transition";
+
+    $pageTitle = "附件备份";
+
+    let backupsListComponent;
+    let originalFormSettings = {};
+    let formSettings = {};
+    let isLoading = false;
+    let isSaving = false;
+    let initialHash = "";
+    let enableAutoBackups = false;
+    let showBackupsSettings = false;
+    let isTesting = false;
+    let testError = null;
+    let isWebDAVTesting = false;
+    let webdavTestError = null;
+
+    $: initialHash = JSON.stringify(originalFormSettings);
+
+    $: hasChanges = initialHash != JSON.stringify(formSettings);
+
+    $: if (!enableAutoBackups && formSettings?.backups?.cron) {
+        removeError("backups.cron");
+        formSettings.backups.cron = "";
+    }
+
+    loadSettings();
+
+    async function loadSettings() {
+        isLoading = true;
+
+        try {
+            const settings = (await ApiClient.settings.getAll()) || {};
+            init(settings);
+        } catch (err) {
+            ApiClient.error(err);
+        }
+
+        isLoading = false;
+    }
+
+    async function save() {
+        if (isSaving || !hasChanges) {
+            return;
+        }
+
+        isSaving = true;
+
+        try {
+            const settings = await ApiClient.settings.update(CommonHelper.filterRedactedProps(formSettings));
+
+            await refreshList();
+
+            init(settings);
+
+            addSuccessToast("Successfully saved application settings.");
+        } catch (err) {
+            ApiClient.error(err);
+        }
+
+        isSaving = false;
+    }
+
+    function init(settings = {}) {
+        formSettings = {
+            backups: settings?.backups || {},
+        };
+
+        enableAutoBackups = formSettings.backups.cron != "";
+
+        originalFormSettings = JSON.parse(JSON.stringify(formSettings));
+    }
+
+    function reset() {
+        formSettings = JSON.parse(JSON.stringify(originalFormSettings || { backups: {} }));
+        enableAutoBackups = formSettings.backups.cron != "";
+    }
+
+    async function refreshList() {
+        await backupsListComponent?.loadBackups();
+    }
+</script>
+
+<SettingsSidebar />
+
+<PageWrapper>
+    <header class="page-header">
+        <nav class="breadcrumbs">
+            <div class="breadcrumb-item">设置</div>
+            <div class="breadcrumb-item">{$pageTitle}</div>
+        </nav>
+    </header>
+
+    <div class="wrapper">
+        <div class="panel" autocomplete="off" on:submit|preventDefault={save}>
+            <div class="flex m-b-sm flex-gap-5">
+                <span class="txt-xl">备份或者恢复你的附件</span>
+                <RefreshButton
+                    class="btn-sm"
+                    tooltip={"刷新"}
+                    on:refresh={() => refreshList()}
+                />
+            </div>
+
+            <BackupsList bind:this={backupsListComponent} />
+
+            <hr />
+
+            <button
+                type="button"
+                class="btn btn-secondary"
+                class:btn-loading={isLoading}
+                disabled={isLoading}
+                on:click={() => (showBackupsSettings = !showBackupsSettings)}
+            >
+                <span class="txt">更多设置</span>
+                {#if showBackupsSettings}
+                    <i class="ri-arrow-up-s-line" />
+                {:else}
+                    <i class="ri-arrow-down-s-line" />
+                {/if}
+            </button>
+
+            {#if showBackupsSettings && !isLoading}
+                <form
+                    class="block"
+                    autocomplete="off"
+                    on:submit|preventDefault={save}
+                    transition:slide|local={{ duration: 150 }}
+                >
+                    <Field class="form-field form-field-toggle m-t-base m-b-0" let:uniqueId>
+                        <input type="checkbox" id={uniqueId} required bind:checked={enableAutoBackups} />
+                        <label for={uniqueId}>开启定时备份</label>
+                    </Field>
+
+                    {#if enableAutoBackups}
+                        <div class="block" transition:slide|local={{ duration: 150 }}>
+                            <div class="grid p-t-base p-b-sm">
+                                <div class="col-lg-6">
+                                    <Field class="form-field required" name="backups.cron" let:uniqueId>
+                                        <label for={uniqueId}>Cron expression</label>
+                                        <!-- svelte-ignore a11y-autofocus -->
+                                        <input
+                                            required
+                                            type="text"
+                                            id={uniqueId}
+                                            class="txt-lg txt-mono"
+                                            placeholder="* * * * *"
+                                            autofocus={!originalFormSettings?.backups?.cron}
+                                            bind:value={formSettings.backups.cron}
+                                        />
+                                        <div class="form-field-addon">
+                                            <button type="button" class="btn btn-sm btn-outline p-r-0">
+                                                <span class="txt">Presets</span>
+                                                <i class="ri-arrow-drop-down-fill" />
+                                                <Toggler class="dropdown dropdown-nowrap dropdown-right">
+                                                    <button
+                                                        type="button"
+                                                        class="dropdown-item closable"
+                                                        on:click={() => {
+                                                            formSettings.backups.cron = "0 0 * * *";
+                                                        }}
+                                                    >
+                                                        <span class="txt">Every day at 00:00h</span>
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        class="dropdown-item closable"
+                                                        on:click={() => {
+                                                            formSettings.backups.cron = "0 0 * * 0";
+                                                        }}
+                                                    >
+                                                        <span class="txt">Every sunday at 00:00h</span>
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        class="dropdown-item closable"
+                                                        on:click={() => {
+                                                            formSettings.backups.cron = "0 0 * * 1,3";
+                                                        }}
+                                                    >
+                                                        <span class="txt">Every Mon and Wed at 00:00h</span>
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        class="dropdown-item closable"
+                                                        on:click={() => {
+                                                            formSettings.backups.cron = "0 0 1 * *";
+                                                        }}
+                                                    >
+                                                        <span class="txt">
+                                                            Every first day of the month at 00:00h
+                                                        </span>
+                                                    </button>
+                                                </Toggler>
+                                            </button>
+                                        </div>
+                                        <div class="help-block">
+                                            <p>
+                                                Supports numeric list, steps and ranges. The timezone is in
+                                                UTC.
+                                            </p>
+                                        </div>
+                                    </Field>
+                                </div>
+                                <div class="col-lg-6">
+                                    <Field
+                                        class="form-field required"
+                                        name="backups.cronMaxKeep"
+                                        let:uniqueId
+                                    >
+                                        <label for={uniqueId}>Max @auto backups to keep</label>
+                                        <input
+                                            type="number"
+                                            id={uniqueId}
+                                            min="1"
+                                            bind:value={formSettings.backups.cronMaxKeep}
+                                        />
+                                    </Field>
+                                </div>
+                            </div>
+                        </div>
+                    {/if}
+
+                    <div class="clearfix m-b-base" />
+
+                    <S3Fields
+                        toggleLabel="使用s3协议存储备份"
+                        testFilesystem="backups"
+                        configKey="backups.s3"
+                        originalConfig={originalFormSettings.backups?.s3}
+                        bind:config={formSettings.backups.s3}
+                        bind:isTesting
+                        bind:testError
+                    />
+
+                    <WebDAVFields
+                        toggleLabel="使用 WebDAV 协议存储备份"
+                        testFilesystem="backups"
+                        configKey="backups.webdav"
+                        originalConfig={originalFormSettings.backups?.webdav}
+                        bind:config={formSettings.backups.webdav}
+                        bind:isTesting={isWebDAVTesting}
+                        bind:testError={webdavTestError}
+                    />
+
+                    <div class="flex">
+                        <div class="flex-fill" />
+
+                        {#if formSettings.backups?.s3?.enabled && !hasChanges && !isSaving}
+                            {#if isTesting}
+                                <span class="loader loader-sm" />
+                            {:else if testError}
+                                <div
+                                    class="label label-sm label-warning entrance-right"
+                                    use:tooltip={testError.data?.message}
+                                >
+                                    <i class="ri-error-warning-line txt-warning" />
+                                    <span class="txt">Failed to establish S3 connection</span>
+                                </div>
+                            {:else}
+                                <div class="label label-sm label-success entrance-right">
+                                    <i class="ri-checkbox-circle-line txt-success" />
+                                    <span class="txt">S3 connected successfully</span>
+                                </div>
+                            {/if}
+                        {/if}
+
+                        {#if formSettings.backups?.webdav?.enabled && !hasChanges && !isSaving}
+                            {#if isWebDAVTesting}
+                                <span class="loader loader-sm" />
+                            {:else if webdavTestError}
+                                <div
+                                    class="label label-sm label-warning entrance-right"
+                                    use:tooltip={webdavTestError.data?.message}
+                                >
+                                    <i class="ri-error-warning-line txt-warning" />
+                                    <span class="txt">Failed to establish WebDAV connection</span>
+                                </div>
+                            {:else}
+                                <div class="label label-sm label-success entrance-right">
+                                    <i class="ri-checkbox-circle-line txt-success" />
+                                    <span class="txt">WebDAV connected successfully</span>
+                                </div>
+                            {/if}
+                        {/if}
+
+                        {#if hasChanges}
+                            <button
+                                type="submit"
+                                class="btn btn-hint btn-transparent"
+                                disabled={!hasChanges || isSaving}
+                                on:click={() => reset()}
+                            >
+                                <span class="txt">重置</span>
+                            </button>
+                        {/if}
+
+                        <button
+                            type="submit"
+                            class="btn btn-expanded"
+                            class:btn-loading={isSaving}
+                            disabled={!hasChanges || isSaving}
+                            on:click={() => save()}
+                        >
+                            <span class="txt">保存</span>
+                        </button>
+                    </div>
+                </form>
+            {/if}
+        </div>
+    </div>
+</PageWrapper>

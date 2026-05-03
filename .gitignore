@@ -1,0 +1,34 @@
+/.vscode/
+.idea
+
+.DS_Store
+
+# goreleaser builds folder
+/.builds/
+/dist/
+
+# tests coverage
+coverage.out
+
+# plaintask todo files
+*.todo
+
+# generated markdown previews
+README.html
+CHANGELOG.html
+LICENSE.html
+
+# PocketBase data and migrations
+pb_data/
+pb_migrations/
+pb_public/
+
+# Binaries
+/pb
+/pb.exe
+/pocketbase
+/pocketbase.exe
+
+# Local environment variables
+.env
+.env.local

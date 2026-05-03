@@ -1,0 +1,534 @@
+<script>
+    import tooltip from "@/actions/tooltip";
+    import Field from "@/components/base/Field.svelte";
+    import OverlayPanel from "@/components/base/OverlayPanel.svelte";
+    import Toggler from "@/components/base/Toggler.svelte";
+    import CollectionAuthOptionsTab from "@/components/collections/CollectionAuthOptionsTab.svelte";
+    import CollectionCacheTab from "@/components/collections/CollectionCacheTab.svelte";
+    import CollectionFieldsTab from "@/components/collections/CollectionFieldsTab.svelte";
+    import CollectionQueryTab from "@/components/collections/CollectionQueryTab.svelte";
+    import CollectionRulesTab from "@/components/collections/CollectionRulesTab.svelte";
+    import CollectionUpdateConfirm from "@/components/collections/CollectionUpdateConfirm.svelte";
+    import { addCollection, removeCollection } from "@/stores/collections";
+    import { confirm } from "@/stores/confirmation";
+    import { errors, removeError, setErrors } from "@/stores/errors";
+    import { addSuccessToast, removeAllToasts } from "@/stores/toasts";
+    import { admin } from "@/stores/admin";
+    import { t } from "@/i18n";
+    import ApiClient from "@/utils/ApiClient";
+    import CommonHelper from "@/utils/CommonHelper";
+    import { Collection } from "pocketbase";
+    import { createEventDispatcher, tick } from "svelte";
+    import { scale } from "svelte/transition";
+
+    const TAB_SCHEMA = "schema";
+    const TAB_RULES = "api_rules";
+    const TAB_CACHE = "cache";
+    const TAB_OPTIONS = "options";
+
+    const TYPE_BASE = "base";
+    const TYPE_AUTH = "auth";
+    const TYPE_VIEW = "view";
+
+    const collectionTypes = {};
+    collectionTypes[TYPE_BASE] = "Base";
+    collectionTypes[TYPE_VIEW] = "View";
+    collectionTypes[TYPE_AUTH] = "Auth";
+
+    const dispatch = createEventDispatcher();
+
+    let collectionPanel;
+    let confirmChangesPanel;
+    let original = null;
+    let collection = new Collection();
+    let isSaving = false;
+    let confirmClose = false; // prevent close recursion
+    let activeTab = TAB_SCHEMA;
+    let initialFormHash = calculateFormHash(collection);
+    let schemaTabError = "";
+
+    let projects = [];
+
+    async function loadProjects() {
+        try {
+            projects = await ApiClient.collection("project").getFullList(200, {
+                sort: "name",
+            });
+        } catch (err) {
+            console.warn("Failed to load projects:", err);
+        }
+    }
+
+    $: if ($admin?.id) {
+        loadProjects();
+    }
+
+    $: if ($errors.schema || $errors.options?.query) {
+        // extract the direct schema field error, otherwise - return a generic message
+        schemaTabError = CommonHelper.getNestedVal($errors, "schema.message") || "Has errors";
+    } else {
+        schemaTabError = "";
+    }
+
+    $: isSystemUpdate = !collection.$isNew && collection.system;
+
+    $: hasChanges = initialFormHash != calculateFormHash(collection);
+
+    $: canSave = collection.$isNew || hasChanges;
+
+    $: if (activeTab === TAB_OPTIONS && collection.type !== TYPE_AUTH) {
+        // reset selected tab
+        changeTab(TAB_SCHEMA);
+    }
+
+    $: if (collection.type === TYPE_VIEW) {
+        // reset non-view fields
+        collection.createRule = null;
+        collection.updateRule = null;
+        collection.deleteRule = null;
+        collection.indexes = [];
+    }
+
+    // update indexes on collection rename
+    $: if (collection?.name && original?.name != collection?.name) {
+        collection.indexes = collection.indexes?.map((idx) =>
+            CommonHelper.replaceIndexTableName(idx, collection.name),
+        );
+    }
+
+    export function changeTab(newTab) {
+        activeTab = newTab;
+    }
+
+    export function show(model) {
+        load(model);
+
+        loadProjects(); // 每次打开弹窗都尝试刷新项目列表
+
+        confirmClose = true;
+
+        changeTab(TAB_SCHEMA);
+
+        return collectionPanel?.show();
+    }
+
+    export function hide() {
+        return collectionPanel?.hide();
+    }
+
+    async function load(model) {
+        setErrors({}); // reset errors
+
+        if (typeof model !== "undefined") {
+            original = model;
+            collection = model.$clone();
+        } else {
+            original = null;
+            collection = new Collection();
+        }
+
+        // normalize
+        collection.schema = collection.schema || [];
+        collection.originalName = collection.name || "";
+
+        await tick();
+
+        initialFormHash = calculateFormHash(collection);
+    }
+
+    function saveConfirm() {
+        if (collection.$isNew) {
+            save();
+        } else {
+            confirmChangesPanel?.show(original, collection);
+        }
+    }
+
+    function save() {
+        if (isSaving) {
+            return;
+        }
+
+        isSaving = true;
+
+        const data = exportFormData();
+
+        let request;
+        if (collection.$isNew) {
+            request = ApiClient.collections.create(data);
+        } else {
+            request = ApiClient.collections.update(collection.id, data);
+        }
+
+        request
+            .then((result) => {
+                removeAllToasts();
+
+                addCollection(result);
+
+                confirmClose = false;
+                hide();
+
+                addSuccessToast(collection.$isNew ? "建表成功." : "更新成功.");
+
+                dispatch("save", {
+                    isNew: collection.$isNew,
+                    collection: result,
+                });
+            })
+            .catch((err) => {
+                ApiClient.error(err);
+            })
+            .finally(() => {
+                isSaving = false;
+            });
+    }
+
+    function exportFormData() {
+        const data = collection.$export();
+        data.schema = data.schema.slice(0);
+        data.displayName = collection.displayName;
+        data.project = collection.project;
+
+        // remove deleted fields
+        for (let i = data.schema.length - 1; i >= 0; i--) {
+            const field = data.schema[i];
+            if (field.toDelete) {
+                data.schema.splice(i, 1);
+            }
+        }
+
+        return data;
+    }
+
+    function deleteConfirm() {
+        if (!original?.id) {
+            return; // nothing to delete
+        }
+
+        confirm(`是否要删除 "${original?.name}" 表 并清空其中数据?`, () => {
+            return ApiClient.collections
+                .delete(original?.id)
+                .then(() => {
+                    hide();
+                    addSuccessToast(`成功删除 "${original?.name}"表.`);
+                    dispatch("delete", original);
+                    removeCollection(original);
+                })
+                .catch((err) => {
+                    ApiClient.error(err);
+                });
+        });
+    }
+
+    function calculateFormHash(m) {
+        return JSON.stringify(m);
+    }
+
+    function setCollectionType(t) {
+        collection.type = t;
+
+        // reset schema errors on type change
+        removeError("schema");
+    }
+
+    function duplicateConfirm() {
+        if (hasChanges) {
+            confirm("不保存 直接取消么?", () => {
+                duplicate();
+            });
+        } else {
+            duplicate();
+        }
+    }
+
+    async function duplicate() {
+        const clone = original?.$clone();
+
+        if (clone) {
+            clone.id = "";
+            clone.created = "";
+            clone.updated = "";
+            clone.name += "_duplicate";
+
+            // reset the schema
+            if (!CommonHelper.isEmpty(clone.schema)) {
+                for (const field of clone.schema) {
+                    field.id = "";
+                }
+            }
+
+            // update indexes with the new table name
+            if (!CommonHelper.isEmpty(clone.indexes)) {
+                for (let i = 0; i < clone.indexes.length; i++) {
+                    const parsed = CommonHelper.parseIndex(clone.indexes[i]);
+                    parsed.indexName = "idx_" + CommonHelper.randomString(7);
+                    parsed.tableName = clone.name;
+                    clone.indexes[i] = CommonHelper.buildIndex(parsed);
+                }
+            }
+        }
+
+        show(clone);
+
+        await tick();
+
+        initialFormHash = "";
+    }
+</script>
+
+<OverlayPanel
+    bind:this={collectionPanel}
+    class="overlay-panel-lg colored-header collection-panel"
+    escClose={false}
+    overlayClose={!isSaving}
+    beforeHide={() => {
+        if (hasChanges && confirmClose) {
+            confirm("不保存直接取消?", () => {
+                confirmClose = false;
+                hide();
+            });
+            return false;
+        }
+        return true;
+    }}
+    on:hide
+    on:show
+>
+    <svelte:fragment slot="header">
+        <h4 class="upsert-panel-title">
+            {collection.$isNew ? "新建表结构" : "修改表结构"}
+        </h4>
+
+        {#if !collection.$isNew && !collection.system}
+            <div class="flex-fill" />
+            <button type="button" aria-label="More" class="btn btn-sm btn-circle btn-transparent flex-gap-0">
+                <i class="ri-more-line" />
+                <Toggler class="dropdown dropdown-right m-t-5">
+                    <button type="button" class="dropdown-item closable" on:click={() => duplicateConfirm()}>
+                        <i class="ri-file-copy-line" />
+                        <span class="txt">复制</span>
+                    </button>
+                    <button
+                        type="button"
+                        class="dropdown-item txt-danger closable"
+                        on:click|preventDefault|stopPropagation={() => deleteConfirm()}
+                    >
+                        <i class="ri-delete-bin-7-line" />
+                        <span class="txt">删除</span>
+                    </button>
+                </Toggler>
+            </button>
+        {/if}
+
+        <form
+            class="block"
+            on:submit|preventDefault={() => {
+                canSave && saveConfirm();
+            }}
+        >
+            <div class="grid">
+                <div class="col-lg-6">
+                    <Field class="form-field required" name="displayName" let:uniqueId>
+                        <label for={uniqueId}>显示名称 (支持中文)</label>
+                        <input
+                            type="text"
+                            id={uniqueId}
+                            disabled={isSystemUpdate}
+                            spellcheck="false"
+                            placeholder="例如：文章列表"
+                            value={collection.displayName || ""}
+                            on:input={(e) => {
+                                collection.displayName = e.target.value;
+                            }}
+                        />
+                    </Field>
+                </div>
+
+                <div class="col-lg-6">
+                    <Field class="form-field required" name="name" let:uniqueId>
+                        <label for={uniqueId}>内部标识 (仅限字母数字下划线)</label>
+                        <input
+                            type="text"
+                            id={uniqueId}
+                            required
+                            disabled={isSystemUpdate}
+                            spellcheck="false"
+                            autofocus={collection.$isNew}
+                            placeholder={collection.$isAuth ? `例如：users` : `例如：posts`}
+                            value={collection.name}
+                            on:input={(e) => {
+                                collection.name = CommonHelper.slugify(e.target.value);
+                                e.target.value = collection.name;
+                            }}
+                        />
+                    </Field>
+                </div>
+
+                <div class="col-lg-6">
+                    <Field class="form-field" name="project" let:uniqueId>
+                        <label for={uniqueId}>所属项目</label>
+                        <select id={uniqueId} disabled={isSystemUpdate} bind:value={collection.project}>
+                            <option value={null}>未分配 (None)</option>
+                            {#each projects as project (project.id)}
+                                <option value={project.id}>{project.name}</option>
+                            {/each}
+                        </select>
+                    </Field>
+                </div>
+
+                <div class="col-lg-6">
+                    <Field class="form-field" name="type" let:uniqueId>
+                        <label for={uniqueId}>表类型</label>
+                        <button
+                            type="button"
+                            id={uniqueId}
+                            class="btn btn-block btn-outline justify-content-start"
+                            disabled={!collection.$isNew}
+                        >
+                            <i class={CommonHelper.getCollectionTypeIcon(collection.type)} />
+                            <span class="txt">类型: {collectionTypes[collection.type] || "N/A"}</span>
+                            {#if collection.$isNew}
+                                <div class="flex-fill" />
+                                <i class="ri-arrow-down-s-fill" />
+                                <Toggler class="dropdown dropdown-right dropdown-nowrap m-t-5">
+                                    {#each Object.entries(collectionTypes) as [type, label]}
+                                        <button
+                                            type="button"
+                                            class="dropdown-item closable"
+                                            class:selected={type == collection.type}
+                                            on:click={() => setCollectionType(type)}
+                                        >
+                                            <i class={CommonHelper.getCollectionTypeIcon(type)} />
+                                            <span class="txt">{label} Collection</span>
+                                        </button>
+                                    {/each}
+                                </Toggler>
+                            {/if}
+                        </button>
+                    </Field>
+                </div>
+            </div>
+
+            <input type="submit" class="hidden" tabindex="-1" />
+        </form>
+
+        <div class="tabs-header stretched">
+            <button
+                type="button"
+                class="tab-item"
+                class:active={activeTab === TAB_SCHEMA}
+                on:click={() => changeTab(TAB_SCHEMA)}
+            >
+                <span class="txt">{collection?.$isView ? "视图查询语句" : "表字段元素"}</span>
+                {#if !CommonHelper.isEmpty(schemaTabError)}
+                    <i
+                        class="ri-error-warning-fill txt-danger"
+                        transition:scale|local={{ duration: 150, start: 0.7 }}
+                        use:tooltip={schemaTabError}
+                    />
+                {/if}
+            </button>
+
+            <button
+                type="button"
+                class="tab-item"
+                class:active={activeTab === TAB_RULES}
+                on:click={() => changeTab(TAB_RULES)}
+            >
+                <span class="txt">鉴权（默认打开）</span>
+                {#if !CommonHelper.isEmpty($errors?.listRule) || !CommonHelper.isEmpty($errors?.viewRule) || !CommonHelper.isEmpty($errors?.createRule) || !CommonHelper.isEmpty($errors?.updateRule) || !CommonHelper.isEmpty($errors?.deleteRule) || !CommonHelper.isEmpty($errors?.options?.manageRule)}
+                    <i
+                        class="ri-error-warning-fill txt-danger"
+                        transition:scale|local={{ duration: 150, start: 0.7 }}
+                        use:tooltip={"Has errors"}
+                    />
+                {/if}
+            </button>
+
+            <button
+                type="button"
+                class="tab-item"
+                class:active={activeTab === TAB_CACHE}
+                on:click={() => changeTab(TAB_CACHE)}
+            >
+                <span class="txt">{$t("Cache")}</span>
+            </button>
+
+            {#if collection.$isAuth}
+                <button
+                    type="button"
+                    class="tab-item"
+                    class:active={activeTab === TAB_OPTIONS}
+                    on:click={() => changeTab(TAB_OPTIONS)}
+                >
+                    <span class="txt">更多设置</span>
+                    {#if !CommonHelper.isEmpty($errors?.options) && !$errors?.options?.manageRule}
+                        <i
+                            class="ri-error-warning-fill txt-danger"
+                            transition:scale|local={{ duration: 150, start: 0.7 }}
+                            use:tooltip={"Has errors"}
+                        />
+                    {/if}
+                </button>
+            {/if}
+        </div>
+    </svelte:fragment>
+
+    <div class="tabs-content">
+        <!-- avoid rerendering the fields tab -->
+        <div class="tab-item" class:active={activeTab === TAB_SCHEMA}>
+            {#if collection.$isView}
+                <CollectionQueryTab bind:collection />
+            {:else}
+                <CollectionFieldsTab bind:collection />
+            {/if}
+        </div>
+
+        {#if activeTab === TAB_RULES}
+            <div class="tab-item active">
+                <CollectionRulesTab bind:collection />
+            </div>
+        {/if}
+
+        {#if activeTab === TAB_CACHE}
+            <div class="tab-item active">
+                <CollectionCacheTab bind:collection />
+            </div>
+        {/if}
+
+        {#if collection.$isAuth}
+            <div class="tab-item" class:active={activeTab === TAB_OPTIONS}>
+                <CollectionAuthOptionsTab bind:collection />
+            </div>
+        {/if}
+    </div>
+
+    <svelte:fragment slot="footer">
+        <button type="button" class="btn btn-transparent" disabled={isSaving} on:click={() => hide()}>
+            <span class="txt">取消</span>
+        </button>
+        <button
+            type="button"
+            class="btn btn-expanded"
+            class:btn-loading={isSaving}
+            disabled={!canSave || isSaving}
+            on:click={() => saveConfirm()}
+        >
+            <span class="txt">{collection.$isNew ? "创建" : "保存"}</span>
+        </button>
+    </svelte:fragment>
+</OverlayPanel>
+
+<CollectionUpdateConfirm bind:this={confirmChangesPanel} on:confirm={() => save()} />
+
+<style>
+    .upsert-panel-title {
+        display: inline-flex;
+        align-items: center;
+        min-height: var(--smBtnHeight);
+    }
+    .tabs-content:focus-within {
+        z-index: 9; /* autocomplete dropdown overlay fix */
+    }
+</style>
